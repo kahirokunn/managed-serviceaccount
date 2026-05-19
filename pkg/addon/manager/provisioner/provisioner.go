@@ -94,11 +94,12 @@ func (p *Provisioner) Sync(ctx context.Context) error {
 	}
 
 	existing, err := p.HostingClient.CoreV1().Secrets(p.TargetNamespace).Get(ctx, p.TargetSecret, metav1.GetOptions{})
-	targetMissing := apierrors.IsNotFound(err)
-	if err != nil && !targetMissing {
+	switch {
+	case apierrors.IsNotFound(err):
+		existing = nil
+	case err != nil:
 		return fmt.Errorf("get target managed kubeconfig secret %s/%s: %w", p.TargetNamespace, p.TargetSecret, err)
-	}
-	if err == nil && p.targetSecretFresh(existing, sourceHash) {
+	case p.targetSecretFresh(existing, sourceHash):
 		return nil
 	}
 
@@ -132,22 +133,25 @@ func (p *Provisioner) Sync(ctx context.Context) error {
 	}
 
 	expiration := tokenRequest.Status.ExpirationTimestamp.Time.UTC().Format(time.RFC3339)
-	required := &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:        p.TargetSecret,
-			Namespace:   p.TargetNamespace,
-			Annotations: map[string]string{},
-		},
-		Type: corev1.SecretTypeOpaque,
-		Data: map[string][]byte{
-			KubeconfigSecretKey: kubeconfig,
-			TokenExpirationKey:  []byte(expiration),
-		},
+	desiredAnnotations := map[string]string{
+		TokenExpirationAnnotation:      expiration,
+		SourceKubeconfigHashAnnotation: sourceHash,
 	}
-	required.Annotations[TokenExpirationAnnotation] = expiration
-	required.Annotations[SourceKubeconfigHashAnnotation] = sourceHash
+	desiredData := map[string][]byte{
+		KubeconfigSecretKey: kubeconfig,
+		TokenExpirationKey:  []byte(expiration),
+	}
 
-	if targetMissing {
+	if existing == nil {
+		required := &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:        p.TargetSecret,
+				Namespace:   p.TargetNamespace,
+				Annotations: desiredAnnotations,
+			},
+			Type: corev1.SecretTypeOpaque,
+			Data: desiredData,
+		}
 		if _, err := p.HostingClient.CoreV1().Secrets(p.TargetNamespace).Create(ctx, required, metav1.CreateOptions{}); err != nil {
 			return fmt.Errorf("create target managed kubeconfig secret %s/%s: %w", p.TargetNamespace, p.TargetSecret, err)
 		}
@@ -159,9 +163,10 @@ func (p *Provisioner) Sync(ctx context.Context) error {
 	if updated.Annotations == nil {
 		updated.Annotations = map[string]string{}
 	}
-	updated.Annotations[TokenExpirationAnnotation] = expiration
-	updated.Annotations[SourceKubeconfigHashAnnotation] = sourceHash
-	updated.Data = required.Data
+	for k, v := range desiredAnnotations {
+		updated.Annotations[k] = v
+	}
+	updated.Data = desiredData
 	if _, err := p.HostingClient.CoreV1().Secrets(p.TargetNamespace).Update(ctx, updated, metav1.UpdateOptions{}); err != nil {
 		return fmt.Errorf("update target managed kubeconfig secret %s/%s: %w", p.TargetNamespace, p.TargetSecret, err)
 	}
@@ -283,20 +288,6 @@ func currentCluster(config *clientcmdapi.Config) (*clientcmdapi.Cluster, error) 
 		return nil, fmt.Errorf("source managed kubeconfig cluster %q not found", context.Cluster)
 	}
 	return cluster, nil
-}
-
-func sourceKubeconfigHash(kubeconfig []byte) string {
-	config, err := clientcmd.Load(kubeconfig)
-	if err != nil {
-		sum := sha256.Sum256(kubeconfig)
-		return hex.EncodeToString(sum[:])
-	}
-	hash, err := sourceKubeconfigHashFromConfig(config)
-	if err != nil {
-		sum := sha256.Sum256(kubeconfig)
-		return hex.EncodeToString(sum[:])
-	}
-	return hash
 }
 
 func sourceKubeconfigHashFromConfig(config *clientcmdapi.Config) (string, error) {

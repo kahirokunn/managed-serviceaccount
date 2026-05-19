@@ -108,6 +108,8 @@ func (o *ManagedKubeconfigProvisionerOptions) Run(ctx context.Context) error {
 		return p.Cleanup(ctx)
 	}
 
+	ticker := time.NewTicker(o.SyncInterval)
+	defer ticker.Stop()
 	for {
 		if err := p.Sync(ctx); err != nil {
 			klog.ErrorS(err, "failed to provision managed kubeconfig")
@@ -116,7 +118,7 @@ func (o *ManagedKubeconfigProvisionerOptions) Run(ctx context.Context) error {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
-		case <-time.After(o.SyncInterval):
+		case <-ticker.C:
 		}
 	}
 }

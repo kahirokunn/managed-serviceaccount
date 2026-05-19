@@ -283,6 +283,18 @@ func assertAction(t *testing.T, actions []clienttesting.Action, verb, resource s
 	t.Fatalf("expected action %s %s in %#v", verb, resource, actions)
 }
 
+func sourceKubeconfigHash(kubeconfig []byte) string {
+	config, err := clientcmd.Load(kubeconfig)
+	if err != nil {
+		panic(err)
+	}
+	hash, err := sourceKubeconfigHashFromConfig(config)
+	if err != nil {
+		panic(err)
+	}
+	return hash
+}
+
 func mustNoError(t *testing.T, err error) {
 	t.Helper()
 
