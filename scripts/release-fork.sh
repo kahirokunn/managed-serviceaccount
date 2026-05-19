@@ -197,7 +197,7 @@ current_buildx_driver() {
     inspect_args+=("${builder}")
   fi
 
-  docker buildx inspect "${inspect_args[@]}" 2>/dev/null | awk '$1 == "Driver:" { print $2; exit }'
+  docker buildx inspect "${inspect_args[@]}" 2>/dev/null | awk '$1 == "Driver:" { print $2; found=1 } END { exit found ? 0 : 1 }'
 }
 
 ensure_buildx_builder() {
