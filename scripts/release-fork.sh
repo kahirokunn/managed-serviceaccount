@@ -19,6 +19,7 @@ CHART_REF="${CHART_REPO}/${CHART_NAME}"
 REFRESH_SCOPES_COMMAND="gh auth refresh -h github.com -s read:packages -s write:packages -s delete:packages"
 
 TMP_ROOT=""
+TEMP_BUILDX_BUILDER=""
 
 usage() {
   cat >&2 <<EOF
@@ -46,6 +47,10 @@ die() {
 }
 
 cleanup() {
+  if [[ -n "${TEMP_BUILDX_BUILDER}" ]]; then
+    docker buildx rm -f "${TEMP_BUILDX_BUILDER}" >/dev/null 2>&1 || true
+  fi
+
   if [[ -n "${TMP_ROOT}" && -d "${TMP_ROOT}" ]]; then
     rm -rf "${TMP_ROOT}"
   fi
@@ -184,6 +189,38 @@ login_to_registries() {
   printf '%s\n' "${token}" | helm registry login "${REGISTRY}" --username "${login}" --password-stdin >/dev/null
 }
 
+current_buildx_driver() {
+  local builder="${1:-}"
+  local inspect_args=()
+
+  if [[ -n "${builder}" ]]; then
+    inspect_args+=("${builder}")
+  fi
+
+  docker buildx inspect "${inspect_args[@]}" 2>/dev/null | awk '$1 == "Driver:" { print $2; exit }'
+}
+
+ensure_buildx_builder() {
+  local driver
+  local name
+
+  if [[ -n "${BUILDX_BUILDER:-}" ]]; then
+    docker buildx inspect "${BUILDX_BUILDER}" >/dev/null
+    return
+  fi
+
+  driver="$(current_buildx_driver)"
+  if [[ "${driver}" != "docker" ]]; then
+    docker buildx inspect >/dev/null
+    return
+  fi
+
+  name="msa-release-${VERSION//[^0-9A-Za-z]/-}-$$"
+  docker buildx create --driver docker-container --name "${name}" >/dev/null
+  TEMP_BUILDX_BUILDER="${name}"
+  BUILDX_BUILDER="${name}"
+}
+
 build_image() {
   local dockerfile="$1"
   local ref="$2"
@@ -280,12 +317,7 @@ release() {
 
   setup_empty_registry_configs
   login_to_registries "${token}" "${login}"
-
-  if [[ -n "${BUILDX_BUILDER:-}" ]]; then
-    docker buildx inspect "${BUILDX_BUILDER}" --bootstrap >/dev/null
-  else
-    docker buildx inspect --bootstrap >/dev/null
-  fi
+  ensure_buildx_builder
 
   revision="$(git rev-parse HEAD)"
 

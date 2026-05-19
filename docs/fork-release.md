@@ -22,6 +22,10 @@ Alternatively, set `GHCR_TOKEN` or `CR_PAT` to a token with `write:packages`.
 The release script logs in to GHCR with temporary Docker and Helm registry
 configs and removes those configs when it exits.
 
+If `GH_TOKEN` is set in the environment, GitHub CLI uses that value instead of
+stored credentials. Unset `GH_TOKEN` before running `gh auth refresh`, or set
+`GHCR_TOKEN`/`CR_PAT` directly for the release script.
+
 ## Publish
 
 Commit the release tooling first, then publish from a clean `hosted-mode-addon`
