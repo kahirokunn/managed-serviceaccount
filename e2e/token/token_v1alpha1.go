@@ -51,7 +51,7 @@ var _ = Describe("Token Test",
 				}, addon)
 				Expect(err).NotTo(HaveOccurred())
 				sa := &corev1.ServiceAccount{}
-				err = f.HubRuntimeClient().Get(context.TODO(), types.NamespacedName{
+				err = f.SpokeRuntimeClient().Get(context.TODO(), types.NamespacedName{
 					Namespace: addon.Status.Namespace,
 					Name:      msa.Name,
 				}, sa)
@@ -149,7 +149,7 @@ var _ = Describe("Token Test",
 			Expect(err).NotTo(HaveOccurred())
 
 			serviceAccount := &corev1.ServiceAccount{}
-			err = f.HubRuntimeClient().Get(context.TODO(), types.NamespacedName{
+			err = f.SpokeRuntimeClient().Get(context.TODO(), types.NamespacedName{
 				Namespace: addon.Status.Namespace,
 				Name:      targetName,
 			}, serviceAccount)
@@ -183,7 +183,7 @@ var _ = Describe("Token Test",
 			// serviceaccount should be deleted
 			Eventually(func() bool {
 				serviceAccount := &corev1.ServiceAccount{}
-				err = f.HubRuntimeClient().Get(context.TODO(), types.NamespacedName{
+				err = f.SpokeRuntimeClient().Get(context.TODO(), types.NamespacedName{
 					Namespace: addon.Status.Namespace,
 					Name:      targetName,
 				}, serviceAccount)

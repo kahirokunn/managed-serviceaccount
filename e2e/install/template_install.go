@@ -22,8 +22,8 @@ const templateInstallTestBasename = "template-install"
 var _ = Describe("Template Addon Installation Test", Label("install"), Label("template-install"),
 	func() {
 		f := framework.NewE2EFramework(templateInstallTestBasename)
-		defaultNs := "open-cluster-management-agent-addon"
-		It("Ignore managed cluster addon spec install namespace", func() {
+		testNs := "test-ns"
+		It("Handle managed cluster addon spec install namespace", func() {
 			By("Update managed cluster addon spec install namespace")
 			Eventually(func() error {
 				addon := &addonv1alpha1.ManagedClusterAddOn{}
@@ -34,7 +34,7 @@ var _ = Describe("Template Addon Installation Test", Label("install"), Label("te
 				Expect(err).NotTo(HaveOccurred())
 
 				addonCopy := addon.DeepCopy()
-				addonCopy.Spec.InstallNamespace = "test-ns" //nolint:staticcheck // testing deprecated field behavior
+				addonCopy.Spec.InstallNamespace = testNs //nolint:staticcheck // testing deprecated field behavior
 				return f.HubRuntimeClient().Update(context.Background(), addonCopy)
 			}).WithTimeout(time.Minute).ShouldNot(HaveOccurred())
 
@@ -51,15 +51,15 @@ var _ = Describe("Template Addon Installation Test", Label("install"), Label("te
 					return fmt.Errorf("addon is unavailable")
 				}
 
-				if addon.Status.Namespace != defaultNs {
-					return fmt.Errorf("addon is not installed in default namespace")
+				if addon.Status.Namespace != testNs {
+					return fmt.Errorf("addon is not installed in expected namespace %q, got %q", testNs, addon.Status.Namespace)
 				}
 				return nil
 			}).WithTimeout(time.Minute).ShouldNot(HaveOccurred())
 
-			By("Make sure addon is installed in default namespace")
+			By("Make sure addon is installed in expected namespace")
 			Eventually(func() error {
-				_, err := f.HubNativeClient().AppsV1().Deployments(defaultNs).Get(
+				_, err := f.AgentNativeClient().AppsV1().Deployments(testNs).Get(
 					context.Background(), "managed-serviceaccount-addon-agent", metav1.GetOptions{})
 				return err
 			}).WithTimeout(time.Minute).ShouldNot(HaveOccurred())

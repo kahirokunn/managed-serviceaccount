@@ -52,7 +52,7 @@ var _ = Describe("Token Test for Managed Service Account v1beta1",
 				}, addon)
 				Expect(err).NotTo(HaveOccurred())
 				sa := &corev1.ServiceAccount{}
-				err = f.HubRuntimeClient().Get(context.TODO(), types.NamespacedName{
+				err = f.SpokeRuntimeClient().Get(context.TODO(), types.NamespacedName{
 					Namespace: addon.Status.Namespace,
 					Name:      msa.Name,
 				}, sa)
@@ -150,7 +150,7 @@ var _ = Describe("Token Test for Managed Service Account v1beta1",
 			Expect(err).NotTo(HaveOccurred())
 
 			serviceAccount := &corev1.ServiceAccount{}
-			err = f.HubRuntimeClient().Get(context.TODO(), types.NamespacedName{
+			err = f.SpokeRuntimeClient().Get(context.TODO(), types.NamespacedName{
 				Namespace: addon.Status.Namespace,
 				Name:      targetName,
 			}, serviceAccount)
@@ -196,7 +196,7 @@ var _ = Describe("Token Test for Managed Service Account v1beta1",
 			//serviceaccount should be deleted
 			Eventually(func() error {
 				serviceAccount := &corev1.ServiceAccount{}
-				err = f.HubRuntimeClient().Get(context.TODO(), types.NamespacedName{
+				err = f.SpokeRuntimeClient().Get(context.TODO(), types.NamespacedName{
 					Namespace: addon.Status.Namespace,
 					Name:      targetName,
 				}, serviceAccount)
@@ -255,7 +255,7 @@ func validateToken(f framework.Framework, targetName string) {
 			Token: string(token),
 		},
 	}
-	err = f.HubRuntimeClient().Create(context.TODO(), tokenReview)
+	err = f.SpokeRuntimeClient().Create(context.TODO(), tokenReview)
 	Expect(err).NotTo(HaveOccurred())
 
 	Expect(tokenReview.Status.Authenticated).To(BeTrue())
