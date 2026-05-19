@@ -1,0 +1,8 @@
+{{ if eq .InstallMode "Hosted" }}
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {{ .AddonInstallNamespace }}
+  annotations:
+    addon.open-cluster-management.io/hosted-manifest-location: hosting
+{{ end }}

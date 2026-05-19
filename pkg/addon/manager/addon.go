@@ -16,6 +16,7 @@ import (
 	"open-cluster-management.io/addon-framework/pkg/agent"
 	addonv1alpha1 "open-cluster-management.io/api/addon/v1alpha1"
 	clusterv1 "open-cluster-management.io/api/cluster/v1"
+	"open-cluster-management.io/managed-serviceaccount/pkg/addon/manager/provisioner"
 	"open-cluster-management.io/managed-serviceaccount/pkg/common"
 )
 
@@ -25,12 +26,24 @@ var FS embed.FS
 func GetDefaultValues(image string, imagePullSecret *corev1.Secret) addonfactory.GetValuesFunc {
 	return func(cluster *clusterv1.ManagedCluster, addon *addonv1alpha1.ManagedClusterAddOn) (addonfactory.Values, error) {
 		manifestConfig := struct {
-			ClusterName         string
-			Image               string
-			ImagePullSecretData string
+			ClusterName                              string
+			Image                                    string
+			ImagePullSecretData                      string
+			ExternalManagedKubeConfigNamespace       string
+			ExternalManagedKubeConfigSecret          string
+			ManagedServiceAccountName                string
+			ManagedKubeConfigTokenExpirationSeconds  int64
+			ManagedKubeConfigRefreshBeforeSeconds    int64
+			ManagedKubeConfigProvisionerSyncInterval string
 		}{
-			ClusterName: cluster.Name,
-			Image:       image,
+			ClusterName:                              cluster.Name,
+			Image:                                    image,
+			ExternalManagedKubeConfigNamespace:       cluster.Name,
+			ExternalManagedKubeConfigSecret:          provisioner.DefaultExternalManagedKubeConfigSecret,
+			ManagedServiceAccountName:                provisioner.DefaultManagedServiceAccountName,
+			ManagedKubeConfigTokenExpirationSeconds:  provisioner.DefaultTokenExpirationSeconds,
+			ManagedKubeConfigRefreshBeforeSeconds:    int64(provisioner.DefaultRefreshBefore.Seconds()),
+			ManagedKubeConfigProvisionerSyncInterval: "5m",
 		}
 
 		if imagePullSecret != nil {

@@ -213,6 +213,7 @@ func (o *HubManagerOptions) Run() error {
 
 		agentFactory := addonfactory.NewAgentAddonFactory(common.AddonName, manager.FS, "manifests/templates").
 			WithConfigGVRs(utils.AddOnDeploymentConfigGVR).
+			WithAgentHostedModeEnabledOption().
 			WithGetValuesFuncs(
 				manager.GetDefaultValues(o.AddonAgentImageName, imagePullSecret),
 				addonfactory.GetAgentImageValues(

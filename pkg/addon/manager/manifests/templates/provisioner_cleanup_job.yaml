@@ -1,0 +1,32 @@
+{{ if eq .InstallMode "Hosted" }}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: managed-serviceaccount-kubeconfig-cleanup
+  namespace: {{ .AddonInstallNamespace }}
+  annotations:
+    addon.open-cluster-management.io/hosted-manifest-location: hosting
+    addon.open-cluster-management.io/addon-pre-delete: ""
+spec:
+  backoffLimit: 3
+  template:
+    spec:
+      serviceAccountName: managed-serviceaccount-kubeconfig-provisioner
+      restartPolicy: Never
+      containers:
+        - name: kubeconfig-cleanup
+          image: {{ .Image }}
+          imagePullPolicy: IfNotPresent
+          command:
+            - /msa
+            - managed-kubeconfig-provisioner
+          args:
+            - --cleanup
+            - --cluster-name={{ .ClusterName }}
+            - --target-namespace={{ .AddonInstallNamespace }}
+            - --target-secret={{ .ManagedKubeConfigSecret }}
+{{ if .ImagePullSecretData }}
+      imagePullSecrets:
+      - name: open-cluster-management-image-pull-credentials
+{{- end }}
+{{ end }}

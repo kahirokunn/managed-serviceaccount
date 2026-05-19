@@ -1,0 +1,42 @@
+{{ if eq .InstallMode "Hosted" }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: managed-serviceaccount-kubeconfig-provisioner
+  namespace: {{ .AddonInstallNamespace }}
+  annotations:
+    addon.open-cluster-management.io/hosted-manifest-location: hosting
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      addon-agent: managed-serviceaccount-kubeconfig-provisioner
+  template:
+    metadata:
+      labels:
+        addon-agent: managed-serviceaccount-kubeconfig-provisioner
+    spec:
+      serviceAccountName: managed-serviceaccount-kubeconfig-provisioner
+      containers:
+        - name: kubeconfig-provisioner
+          image: {{ .Image }}
+          imagePullPolicy: IfNotPresent
+          command:
+            - /msa
+            - managed-kubeconfig-provisioner
+          args:
+            - --cluster-name={{ .ClusterName }}
+            - --source-namespace={{ .ExternalManagedKubeConfigNamespace }}
+            - --source-secret={{ .ExternalManagedKubeConfigSecret }}
+            - --target-namespace={{ .AddonInstallNamespace }}
+            - --target-secret={{ .ManagedKubeConfigSecret }}
+            - --managed-serviceaccount-namespace={{ .AddonInstallNamespace }}
+            - --managed-serviceaccount-name={{ .ManagedServiceAccountName }}
+            - --token-expiration-seconds={{ .ManagedKubeConfigTokenExpirationSeconds }}
+            - --refresh-before={{ .ManagedKubeConfigRefreshBeforeSeconds }}s
+            - --sync-interval={{ .ManagedKubeConfigProvisionerSyncInterval }}
+{{ if .ImagePullSecretData }}
+      imagePullSecrets:
+      - name: open-cluster-management-image-pull-credentials
+{{- end }}
+{{ end }}

@@ -228,7 +228,15 @@ func (o *AgentOptions) Run() error {
 	defer cancel()
 
 	if o.LeaseHealthCheck {
-		leaseUpdater, err := health.NewAddonHealthUpdater(mgr.GetConfig(), o.ClusterName, spokeCfg, spokeNamespace)
+		leaseCfg := spokeCfg
+		if len(o.SpokeKubeconfig) > 0 {
+			leaseCfg, err = rest.InClusterConfig()
+			if err != nil {
+				klog.Fatalf("failed to build an in-cluster lease client config: %v", err)
+			}
+		}
+
+		leaseUpdater, err := health.NewAddonHealthUpdater(mgr.GetConfig(), o.ClusterName, leaseCfg, spokeNamespace)
 		if err != nil {
 			klog.Fatalf("unable to create healthiness lease updater for controller %v", "ManagedServiceAccount")
 		}

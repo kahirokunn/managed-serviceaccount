@@ -1,0 +1,17 @@
+{{ if eq .InstallMode "Hosted" }}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: open-cluster-management:managed-serviceaccount:addon-agent
+  namespace: {{ .AddonInstallNamespace }}
+  annotations:
+    addon.open-cluster-management.io/hosted-manifest-location: hosting
+rules:
+- apiGroups: ["coordination.k8s.io"]
+  resources: ["leases"]
+  verbs: ["create"]
+- apiGroups: ["coordination.k8s.io"]
+  resources: ["leases"]
+  resourceNames: ["managed-serviceaccount"]
+  verbs: ["get", "update", "patch"]
+{{ end }}
