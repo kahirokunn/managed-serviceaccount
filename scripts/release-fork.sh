@@ -11,6 +11,7 @@ BRANCH="${GIT_BRANCH:-hosted-mode-addon}"
 REGISTRY="${REGISTRY:-ghcr.io}"
 CHART_NAME="managed-serviceaccount"
 CHART_DIR="charts/${CHART_NAME}"
+HOST_DOCKER_CONFIG="${DOCKER_CONFIG:-${HOME}/.docker}"
 
 IMAGE="${REGISTRY}/${OWNER}/managed-serviceaccount"
 CP_CREDS_IMAGE="${REGISTRY}/${OWNER}/cp-creds"
@@ -130,6 +131,32 @@ setup_empty_registry_configs() {
   export DOCKER_CONFIG="${TMP_ROOT}/docker"
   export HELM_REGISTRY_CONFIG="${TMP_ROOT}/helm/registry/config.json"
   mkdir -p "${DOCKER_CONFIG}" "$(dirname "${HELM_REGISTRY_CONFIG}")"
+  install_docker_buildx_plugin
+}
+
+install_docker_buildx_plugin() {
+  local plugin
+  local candidates=(
+    "${HOST_DOCKER_CONFIG}/cli-plugins/docker-buildx"
+    "${HOME}/.docker/cli-plugins/docker-buildx"
+    "/usr/local/lib/docker/cli-plugins/docker-buildx"
+    "/usr/lib/docker/cli-plugins/docker-buildx"
+    "/usr/libexec/docker/cli-plugins/docker-buildx"
+  )
+
+  if DOCKER_CONFIG="${DOCKER_CONFIG}" docker buildx version >/dev/null 2>&1; then
+    return
+  fi
+
+  for plugin in "${candidates[@]}"; do
+    if [[ -x "${plugin}" ]]; then
+      mkdir -p "${DOCKER_CONFIG}/cli-plugins"
+      ln -sf "${plugin}" "${DOCKER_CONFIG}/cli-plugins/docker-buildx"
+      return
+    fi
+  done
+
+  die "docker buildx is unavailable with the temporary Docker config"
 }
 
 github_token() {
@@ -189,30 +216,14 @@ login_to_registries() {
   printf '%s\n' "${token}" | helm registry login "${REGISTRY}" --username "${login}" --password-stdin >/dev/null
 }
 
-current_buildx_driver() {
-  local builder="${1:-}"
-  local inspect_args=()
-
-  if [[ -n "${builder}" ]]; then
-    inspect_args+=("${builder}")
-  fi
-
-  docker buildx inspect "${inspect_args[@]}" 2>/dev/null | awk '$1 == "Driver:" { print $2; found=1 } END { exit found ? 0 : 1 }'
-}
-
 ensure_buildx_builder() {
-  local driver
   local name
 
   if [[ -n "${BUILDX_BUILDER:-}" ]]; then
-    docker buildx inspect "${BUILDX_BUILDER}" >/dev/null
-    return
-  fi
-
-  driver="$(current_buildx_driver)"
-  if [[ "${driver}" != "docker" ]]; then
-    docker buildx inspect >/dev/null
-    return
+    if docker buildx inspect "${BUILDX_BUILDER}" >/dev/null 2>&1; then
+      return
+    fi
+    warn "buildx builder ${BUILDX_BUILDER} is not available with the temporary Docker config; creating a temporary builder"
   fi
 
   name="msa-release-${VERSION//[^0-9A-Za-z]/-}-$$"
