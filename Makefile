@@ -132,10 +132,10 @@ rm -rf $$TMP_DIR ;\
 endef
 
 images:
-	$(DOCKER_BUILDER) build -t ${IMG_REGISTRY}/managed-serviceaccount:${IMAGE_TAG} -f Dockerfile .
+	$(DOCKER_BUILDER) build ${IMAGE_BUILD_EXTRA_FLAGS} -t ${IMG_REGISTRY}/managed-serviceaccount:${IMAGE_TAG} -f Dockerfile .
 
 images-amd64:
-	$(DOCKER_BUILDER) build --platform linux/amd64 -t ${IMG_REGISTRY}/managed-serviceaccount:${IMAGE_TAG} -f Dockerfile .
+	$(DOCKER_BUILDER) build --platform linux/amd64 ${IMAGE_BUILD_EXTRA_FLAGS} -t ${IMG_REGISTRY}/managed-serviceaccount:${IMAGE_TAG} -f Dockerfile .
 
 images-cp-creds:
 	$(DOCKER_BUILDER) build ${IMAGE_BUILD_EXTRA_FLAGS} -t ${IMG_REGISTRY}/cp-creds:${IMAGE_TAG} -f Dockerfile.cp-creds .

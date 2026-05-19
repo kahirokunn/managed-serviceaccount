@@ -1,8 +1,12 @@
-FROM golang:1.25-bookworm AS builder
+FROM --platform=$BUILDPLATFORM golang:1.25-bookworm AS builder
+ARG TARGETOS
+ARG TARGETARCH
+ARG OS
+ARG ARCH
 WORKDIR /go/src/github.com/open-cluster-management.io/managed-serviceaccount
 COPY . .
 RUN go env
-RUN make build-bin
+RUN GOOS=${OS:-${TARGETOS:-linux}} GOARCH=${ARCH:-${TARGETARCH:-amd64}} CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -a -o bin/msa cmd/main.go
 
 FROM registry.access.redhat.com/ubi9/ubi-minimal:latest
 COPY --from=builder /go/src/github.com/open-cluster-management.io/managed-serviceaccount/bin/msa /
