@@ -4,11 +4,16 @@ import (
 	"context"
 	"embed"
 	"encoding/base64"
+	"fmt"
 
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/labels"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/utils/ptr"
 
@@ -16,21 +21,63 @@ import (
 	"open-cluster-management.io/addon-framework/pkg/agent"
 	addonv1alpha1 "open-cluster-management.io/api/addon/v1alpha1"
 	clusterv1 "open-cluster-management.io/api/cluster/v1"
+	"open-cluster-management.io/managed-serviceaccount/pkg/addon/manager/provisioner"
 	"open-cluster-management.io/managed-serviceaccount/pkg/common"
 )
 
 //go:embed manifests/templates
 var FS embed.FS
 
+var serviceMonitorGroupVersion = schema.GroupVersion{
+	Group:   "monitoring.coreos.com",
+	Version: "v1",
+}
+
+func NewAgentAddonFactory(addonName string, fs embed.FS, dir string) *addonfactory.AgentAddonFactory {
+	scheme := runtime.NewScheme()
+	addServiceMonitorToScheme(scheme)
+	return addonfactory.NewAgentAddonFactory(addonName, fs, dir).WithScheme(scheme)
+}
+
+func addServiceMonitorToScheme(scheme *runtime.Scheme) {
+	scheme.AddKnownTypeWithName(
+		serviceMonitorGroupVersion.WithKind("ServiceMonitor"),
+		&unstructured.Unstructured{},
+	)
+	scheme.AddKnownTypeWithName(
+		serviceMonitorGroupVersion.WithKind("ServiceMonitorList"),
+		&unstructured.UnstructuredList{},
+	)
+	metav1.AddToGroupVersion(scheme, serviceMonitorGroupVersion)
+}
+
 func GetDefaultValues(image string, imagePullSecret *corev1.Secret) addonfactory.GetValuesFunc {
 	return func(cluster *clusterv1.ManagedCluster, addon *addonv1alpha1.ManagedClusterAddOn) (addonfactory.Values, error) {
 		manifestConfig := struct {
-			ClusterName         string
-			Image               string
-			ImagePullSecretData string
+			ClusterName                              string
+			Image                                    string
+			ImagePullSecretData                      string
+			ExternalManagedKubeConfigNamespace       string
+			ExternalManagedKubeConfigSecret          string
+			ManagedServiceAccountName                string
+			ManagedKubeConfigTokenExpirationSeconds  int64
+			ManagedKubeConfigRefreshBeforeSeconds    int64
+			ManagedKubeConfigProvisionerSyncInterval string
+			AgentMetricsServiceEnabled               string
+			AgentServiceMonitorEnabled               string
+			AgentServiceMonitorLabels                map[string]string
 		}{
-			ClusterName: cluster.Name,
-			Image:       image,
+			ClusterName:                              cluster.Name,
+			Image:                                    image,
+			ExternalManagedKubeConfigNamespace:       cluster.Name,
+			ExternalManagedKubeConfigSecret:          provisioner.DefaultExternalManagedKubeConfigSecret,
+			ManagedServiceAccountName:                provisioner.DefaultManagedServiceAccountName,
+			ManagedKubeConfigTokenExpirationSeconds:  provisioner.DefaultTokenExpirationSeconds,
+			ManagedKubeConfigRefreshBeforeSeconds:    int64(provisioner.DefaultRefreshBefore.Seconds()),
+			ManagedKubeConfigProvisionerSyncInterval: provisioner.DefaultSyncInterval.String(),
+			AgentMetricsServiceEnabled:               "false",
+			AgentServiceMonitorEnabled:               "false",
+			AgentServiceMonitorLabels:                map[string]string{},
 		}
 
 		if imagePullSecret != nil {
@@ -39,6 +86,25 @@ func GetDefaultValues(image string, imagePullSecret *corev1.Secret) addonfactory
 
 		return addonfactory.StructToValues(manifestConfig), nil
 	}
+}
+
+func ToAddOnDeploymentConfigValues(config addonv1alpha1.AddOnDeploymentConfig) (addonfactory.Values, error) {
+	values, err := addonfactory.ToAddOnDeploymentConfigValues(config)
+	if err != nil {
+		return nil, err
+	}
+
+	// The ServiceMonitor template ranges over a label map, so translate the
+	// comma-separated customized variable into one.
+	if raw, ok := values["AgentServiceMonitorLabels"].(string); ok {
+		labelMap, err := labels.ConvertSelectorToLabelsMap(raw)
+		if err != nil {
+			return nil, fmt.Errorf("parse AgentServiceMonitorLabels %q: %w", raw, err)
+		}
+		values["AgentServiceMonitorLabels"] = map[string]string(labelMap)
+	}
+
+	return values, nil
 }
 
 func NewRegistrationOption(nativeClient kubernetes.Interface) *agent.RegistrationOption {
@@ -53,19 +119,20 @@ func setupPermission(nativeClient kubernetes.Interface) agent.PermissionConfigFu
 	return func(cluster *clusterv1.ManagedCluster, addon *addonv1alpha1.ManagedClusterAddOn) error {
 		namespace := cluster.Name
 		agentUser := "system:open-cluster-management:cluster:" + cluster.Name + ":addon:managed-serviceaccount:agent:addon-agent"
+		ownerReferences := []metav1.OwnerReference{
+			{
+				APIVersion:         "addon.open-cluster-management.io/v1alpha1",
+				Kind:               "ManagedClusterAddOn",
+				UID:                addon.UID,
+				Name:               addon.Name,
+				BlockOwnerDeletion: ptr.To(true),
+			},
+		}
 		role := &rbacv1.Role{
 			ObjectMeta: metav1.ObjectMeta{
-				Name:      "managed-serviceaccount-addon-agent",
-				Namespace: namespace,
-				OwnerReferences: []metav1.OwnerReference{
-					{
-						APIVersion:         "addon.open-cluster-management.io/v1alpha1",
-						Kind:               "ManagedClusterAddOn",
-						UID:                addon.UID,
-						Name:               addon.Name,
-						BlockOwnerDeletion: ptr.To(true),
-					},
-				},
+				Name:            "managed-serviceaccount-addon-agent",
+				Namespace:       namespace,
+				OwnerReferences: ownerReferences,
 			},
 			Rules: []rbacv1.PolicyRule{
 				{
@@ -87,17 +154,9 @@ func setupPermission(nativeClient kubernetes.Interface) agent.PermissionConfigFu
 		}
 		roleBinding := &rbacv1.RoleBinding{
 			ObjectMeta: metav1.ObjectMeta{
-				Name:      "managed-serviceaccount-addon-agent",
-				Namespace: namespace,
-				OwnerReferences: []metav1.OwnerReference{
-					{
-						APIVersion:         "addon.open-cluster-management.io/v1alpha1",
-						Kind:               "ManagedClusterAddOn",
-						UID:                addon.UID,
-						Name:               addon.Name,
-						BlockOwnerDeletion: ptr.To(true),
-					},
-				},
+				Name:            "managed-serviceaccount-addon-agent",
+				Namespace:       namespace,
+				OwnerReferences: ownerReferences,
 			},
 			RoleRef: rbacv1.RoleRef{
 				Kind: "Role",

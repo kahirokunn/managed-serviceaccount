@@ -15,21 +15,20 @@ func TestConfigCheckerPaths(t *testing.T) {
 		want            []string
 	}{
 		{
-			name: "default watches only the hub kubeconfig",
+			name: "default mode watches only the hub kubeconfig",
 			want: []string{"/etc/hub/kubeconfig"},
 		},
 		{
-			name:            "spoke kubeconfig also watched when provided",
-			spokeKubeconfig: "/etc/spoke/kubeconfig",
-			want:            []string{"/etc/hub/kubeconfig", "/etc/spoke/kubeconfig"},
+			name:            "hosted mode also watches the rotating managed kubeconfig",
+			spokeKubeconfig: "/etc/managed/kubeconfig",
+			want:            []string{"/etc/hub/kubeconfig", "/etc/managed/kubeconfig"},
 		},
 	}
 
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			opts := &AgentOptions{SpokeKubeconfig: tc.spokeKubeconfig}
-
-			assert.Equal(t, tc.want, opts.configCheckerPaths())
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			opts := &AgentOptions{SpokeKubeconfig: c.spokeKubeconfig}
+			assert.Equal(t, c.want, opts.configCheckerPaths())
 		})
 	}
 }

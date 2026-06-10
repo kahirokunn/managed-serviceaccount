@@ -80,6 +80,9 @@ func (o *AgentOptions) AddFlags(flags *pflag.FlagSet) {
 		"A set of key=value pairs that describe feature gates for alpha/experimental features. "+
 			"Options are:\n"+strings.Join(features.FeatureGates.KnownFeatures(), "\n"))
 	flags.BoolVar(&o.LeaseHealthCheck, "lease-health-check", false, "Use lease to report health check.")
+	flags.BoolVar(&o.LeaseInClusterConfig, "lease-in-cluster-config", false,
+		"Use the agent pod's in-cluster config for the health lease instead of the spoke cluster config. "+
+			"Set this only in hosted-mode deployments where the agent runs on the hosting cluster.")
 }
 
 // AgentOptions holds configuration for agent controller
@@ -91,6 +94,7 @@ type AgentOptions struct {
 	ClusterName          string
 	SpokeKubeconfig      string
 	LeaseHealthCheck     bool
+	LeaseInClusterConfig bool
 }
 
 // NewAgentOptions returns an AgentOptions
@@ -228,7 +232,15 @@ func (o *AgentOptions) Run() error {
 	defer cancel()
 
 	if o.LeaseHealthCheck {
-		leaseUpdater, err := health.NewAddonHealthUpdater(mgr.GetConfig(), o.ClusterName, spokeCfg, spokeNamespace)
+		leaseCfg := spokeCfg
+		if o.LeaseInClusterConfig {
+			leaseCfg, err = rest.InClusterConfig()
+			if err != nil {
+				klog.Fatalf("failed to build an in-cluster lease client config: %v", err)
+			}
+		}
+
+		leaseUpdater, err := health.NewAddonHealthUpdater(mgr.GetConfig(), o.ClusterName, leaseCfg, spokeNamespace)
 		if err != nil {
 			klog.Fatalf("unable to create healthiness lease updater for controller %v", "ManagedServiceAccount")
 		}

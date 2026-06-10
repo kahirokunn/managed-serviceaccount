@@ -4,28 +4,58 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2" //nolint:revive,staticcheck // idiomatic ginkgo usage
 	. "github.com/onsi/gomega"    //nolint:revive,staticcheck // idiomatic gomega usage
 
 	appsv1 "k8s.io/api/apps/v1"
+	coordinationv1 "k8s.io/api/coordination/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/equality"
-	"k8s.io/apimachinery/pkg/api/errors"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/fields"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/wait"
+	"k8s.io/client-go/kubernetes"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
 	addonv1alpha1 "open-cluster-management.io/api/addon/v1alpha1"
+	addonv1beta1 "open-cluster-management.io/api/addon/v1beta1"
 	clusterv1 "open-cluster-management.io/api/cluster/v1"
 	"open-cluster-management.io/managed-serviceaccount/e2e/framework"
+	"open-cluster-management.io/managed-serviceaccount/pkg/addon/manager/provisioner"
 	"open-cluster-management.io/managed-serviceaccount/pkg/common"
 )
 
 const installTestBasename = "install"
+const hostedModeDeployConfigName = "hosted-mode-config"
+
+// Seed the hosted-mode prerequisites in a BeforeSuite so they run before any
+// spec regardless of Ginkgo's randomization. The helpers are no-ops when hosted
+// mode is not configured.
+var _ = BeforeSuite(func() {
+	f := framework.NewSuiteFramework(installTestBasename)
+
+	By("Ensure hosted-mode ManagedClusterAddOn exists and is annotated if configured")
+	ensureHostedManagedClusterAddOn(f)
+
+	By("Seed external managed kubeconfig source secret for hosted mode if configured")
+	seedExternalManagedKubeConfigSecret(f)
+
+	By("Seed hosted hub kubeconfig secret if configured")
+	seedHostedHubKubeConfigSecret(f)
+
+	By("Mirror hosted addon health lease if configured")
+	startHostedAddonLeaseMirror(f)
+
+	By("Apply external managed kubeconfig variables for hosted mode if configured")
+	ensureExternalManagedKubeConfigDeployConfig(f)
+})
 
 var _ = Describe("Addon Installation Test", Label("install"),
 	func() {
@@ -50,20 +80,23 @@ var _ = Describe("Addon Installation Test", Label("install"),
 			c := f.HubRuntimeClient()
 			By("Prepare a AddOnDeploymentConfig for managed-serviceaccount addon")
 			Eventually(func() error {
+				deployConfigSpec := addonv1alpha1.AddOnDeploymentConfigSpec{
+					NodePlacement: &addonv1alpha1.NodePlacement{
+						NodeSelector: nodeSelector,
+						Tolerations:  tolerations,
+					},
+				}
+				appendExternalManagedKubeConfigVariables(f, &deployConfigSpec)
+
 				err := c.Create(context.TODO(), &addonv1alpha1.AddOnDeploymentConfig{
 					ObjectMeta: metav1.ObjectMeta{
 						Name:      deployConfigName,
 						Namespace: f.TestClusterName(),
 					},
-					Spec: addonv1alpha1.AddOnDeploymentConfigSpec{
-						NodePlacement: &addonv1alpha1.NodePlacement{
-							NodeSelector: nodeSelector,
-							Tolerations:  tolerations,
-						},
-					},
+					Spec: deployConfigSpec,
 				})
 				// Ignore already exists error so it is easier to debug locally
-				if errors.IsAlreadyExists(err) {
+				if apierrors.IsAlreadyExists(err) {
 					return nil
 				}
 
@@ -131,8 +164,21 @@ var _ = Describe("Addon Installation Test", Label("install"),
 
 			By("Ensure the managed serviceaccount addon agent is configured")
 			Eventually(func() error {
+				addon := &addonv1alpha1.ManagedClusterAddOn{}
+				if err := c.Get(context.TODO(), types.NamespacedName{
+					Namespace: f.TestClusterName(),
+					Name:      common.AddonName,
+				}, addon); err != nil {
+					return err
+				}
+				addonInstallNamespace := addon.Status.Namespace
+				if addonInstallNamespace == "" {
+					return fmt.Errorf("addon install namespace not yet set")
+				}
+
 				deployments := &appsv1.DeploymentList{}
-				if err := c.List(context.TODO(), deployments, &client.ListOptions{
+				if err := f.AgentRuntimeClient().List(context.TODO(), deployments, &client.ListOptions{
+					Namespace: addonInstallNamespace,
 					FieldSelector: fields.SelectorFromSet(map[string]string{
 						"metadata.name": "managed-serviceaccount-addon-agent",
 					}),
@@ -222,7 +268,7 @@ var _ = Describe("Addon Installation Test", Label("install"),
 
 			By("Make sure addon is configured")
 			Eventually(func() error {
-				agentDeploy, err := f.HubNativeClient().AppsV1().Deployments(addonInstallNamespace).Get(
+				agentDeploy, err := f.AgentNativeClient().AppsV1().Deployments(addonInstallNamespace).Get(
 					context.Background(), "managed-serviceaccount-addon-agent", metav1.GetOptions{})
 				if err != nil {
 					return err
@@ -259,7 +305,7 @@ var _ = Describe("Addon Installation Test", Label("install"),
 
 			By("Make sure addon config is restored")
 			Eventually(func() error {
-				agentDeploy, err := f.HubNativeClient().AppsV1().Deployments(addonInstallNamespace).Get(
+				agentDeploy, err := f.AgentNativeClient().AppsV1().Deployments(addonInstallNamespace).Get(
 					context.Background(), "managed-serviceaccount-addon-agent", metav1.GetOptions{})
 				if err != nil {
 					return err
@@ -279,3 +325,282 @@ var _ = Describe("Addon Installation Test", Label("install"),
 		})
 
 	})
+
+func appendExternalManagedKubeConfigVariables(
+	f framework.Framework,
+	spec *addonv1alpha1.AddOnDeploymentConfigSpec,
+) {
+	if namespace := f.ExternalManagedKubeConfigNamespace(); namespace != "" {
+		spec.CustomizedVariables = append(spec.CustomizedVariables, addonv1alpha1.CustomizedVariable{
+			Name:  "ExternalManagedKubeConfigNamespace",
+			Value: namespace,
+		})
+	}
+	if secret := f.ExternalManagedKubeConfigSecret(); secret != "" {
+		spec.CustomizedVariables = append(spec.CustomizedVariables, addonv1alpha1.CustomizedVariable{
+			Name:  "ExternalManagedKubeConfigSecret",
+			Value: secret,
+		})
+	}
+}
+
+func seedExternalManagedKubeConfigSecret(f framework.Framework) {
+	namespace := f.ExternalManagedKubeConfigNamespace()
+	secret := f.ExternalManagedKubeConfigSecret()
+	if namespace == "" && secret == "" && !f.IsHostedMode() {
+		return
+	}
+	if namespace == "" {
+		namespace = f.TestClusterName()
+	}
+	if secret == "" {
+		secret = provisioner.DefaultExternalManagedKubeConfigSecret
+	}
+
+	kubeconfigPath := f.SpokeKubeConfigPath()
+	Expect(kubeconfigPath).NotTo(BeEmpty(), "--spoke-kubeconfig is required to seed the hosted-mode source secret")
+	kubeconfig, err := os.ReadFile(kubeconfigPath)
+	Expect(err).NotTo(HaveOccurred())
+
+	c := f.AgentNativeClient()
+
+	Eventually(func() error {
+		return ensureNamespace(context.TODO(), c, namespace)
+	}).WithTimeout(time.Minute).ShouldNot(HaveOccurred())
+
+	Eventually(func() error {
+		return createOrUpdateSecret(context.TODO(), c, namespace, secret, func(s *corev1.Secret) {
+			s.Type = corev1.SecretTypeOpaque
+			if s.Data == nil {
+				s.Data = map[string][]byte{}
+			}
+			s.Data[provisioner.KubeconfigSecretKey] = kubeconfig
+		})
+	}).WithTimeout(time.Minute).ShouldNot(HaveOccurred())
+}
+
+func seedHostedHubKubeConfigSecret(f framework.Framework) {
+	if !f.IsHostedMode() {
+		return
+	}
+
+	addonInstallNamespace := waitForAddonInstallNamespace(f)
+
+	// The hosted e2e topology registers the managed spoke and hosting clusters
+	// separately, so the addon-framework registration secret is applied to the
+	// spoke cluster while the hosted agent pod runs on the hosting cluster. Copy
+	// that generated hub kubeconfig into the hosting install namespace so the
+	// hosted agent can mount the same hub client credentials.
+	secretName := common.AddonName + "-hub-kubeconfig"
+	var source *corev1.Secret
+	Eventually(func() error {
+		var err error
+		source, err = f.SpokeNativeClient().CoreV1().Secrets(addonInstallNamespace).Get(
+			context.TODO(), secretName, metav1.GetOptions{})
+		return err
+	}).WithTimeout(time.Minute).ShouldNot(HaveOccurred())
+
+	c := f.AgentNativeClient()
+	Eventually(func() error {
+		return ensureNamespace(context.TODO(), c, addonInstallNamespace)
+	}).WithTimeout(time.Minute).ShouldNot(HaveOccurred())
+
+	Eventually(func() error {
+		return createOrUpdateSecret(context.TODO(), c, addonInstallNamespace, secretName, func(s *corev1.Secret) {
+			s.Type = source.Type
+			s.Data = source.DeepCopy().Data
+		})
+	}).WithTimeout(time.Minute).ShouldNot(HaveOccurred())
+}
+
+func startHostedAddonLeaseMirror(f framework.Framework) {
+	if !f.IsHostedMode() {
+		return
+	}
+
+	addonInstallNamespace := waitForAddonInstallNamespace(f)
+	source := f.AgentNativeClient()
+	target := f.SpokeNativeClient()
+
+	Eventually(func() error {
+		return copyHostedAddonLease(context.TODO(), source, target, addonInstallNamespace)
+	}).WithTimeout(time.Minute).ShouldNot(HaveOccurred())
+
+	ctx, cancel := context.WithCancel(context.Background())
+	DeferCleanup(cancel)
+
+	// The hosted e2e topology uses a normal spoke klusterlet, so its
+	// registration agent checks the spoke cluster for the addon lease. A real
+	// hosted klusterlet runs that registration agent on the hosting cluster. Keep
+	// the spoke copy fresh so the local topology matches the production signal.
+	go wait.UntilWithContext(ctx, func(ctx context.Context) {
+		if err := copyHostedAddonLease(ctx, source, target, addonInstallNamespace); err != nil {
+			fmt.Fprintf(GinkgoWriter, "failed to mirror hosted addon lease: %v\n", err)
+		}
+	}, 10*time.Second)
+}
+
+func copyHostedAddonLease(ctx context.Context, source, target kubernetes.Interface, namespace string) error {
+	lease, err := source.CoordinationV1().Leases(namespace).Get(ctx, common.AddonName, metav1.GetOptions{})
+	if err != nil {
+		return err
+	}
+	spec := *lease.Spec.DeepCopy()
+
+	leases := target.CoordinationV1().Leases(namespace)
+	existing, err := leases.Get(ctx, common.AddonName, metav1.GetOptions{})
+	if apierrors.IsNotFound(err) {
+		_, err = leases.Create(ctx, &coordinationv1.Lease{
+			ObjectMeta: metav1.ObjectMeta{Name: common.AddonName, Namespace: namespace},
+			Spec:       spec,
+		}, metav1.CreateOptions{})
+		return err
+	}
+	if err != nil {
+		return err
+	}
+
+	updated := existing.DeepCopy()
+	updated.Spec = spec
+	_, err = leases.Update(ctx, updated, metav1.UpdateOptions{})
+	return err
+}
+
+func ensureNamespace(ctx context.Context, c kubernetes.Interface, name string) error {
+	_, err := c.CoreV1().Namespaces().Create(ctx, &corev1.Namespace{
+		ObjectMeta: metav1.ObjectMeta{Name: name},
+	}, metav1.CreateOptions{})
+	if apierrors.IsAlreadyExists(err) {
+		return nil
+	}
+	return err
+}
+
+// createOrUpdateSecret applies mutate to a new or existing secret, the
+// controllerutil.CreateOrUpdate idiom for the native kubernetes.Interface.
+func createOrUpdateSecret(
+	ctx context.Context,
+	c kubernetes.Interface,
+	namespace, name string,
+	mutate func(*corev1.Secret),
+) error {
+	secrets := c.CoreV1().Secrets(namespace)
+	existing, err := secrets.Get(ctx, name, metav1.GetOptions{})
+	if apierrors.IsNotFound(err) {
+		secret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace}}
+		mutate(secret)
+		_, err = secrets.Create(ctx, secret, metav1.CreateOptions{})
+		return err
+	}
+	if err != nil {
+		return err
+	}
+	updated := existing.DeepCopy()
+	mutate(updated)
+	_, err = secrets.Update(ctx, updated, metav1.UpdateOptions{})
+	return err
+}
+
+// ensureHostedManagedClusterAddOn annotates the ManagedClusterAddOn for hosted
+// placement and waits until its install namespace is reconciled, so the later
+// seed steps have a namespace to write into. It is a no-op outside hosted mode.
+func ensureHostedManagedClusterAddOn(f framework.Framework) {
+	if !f.IsHostedMode() {
+		return
+	}
+
+	hostingClusterName := f.HostingClusterName()
+	installNamespace := f.HostedInstallNamespace()
+	Expect(hostingClusterName).NotTo(BeEmpty(), "--hosting-cluster-name is required for hosted-mode e2e")
+	Expect(installNamespace).NotTo(BeEmpty(), "--hosted-install-namespace is required for hosted-mode e2e")
+
+	c := f.HubRuntimeClient()
+	Eventually(func() error {
+		addon := &addonv1alpha1.ManagedClusterAddOn{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      common.AddonName,
+				Namespace: f.TestClusterName(),
+			},
+		}
+		_, err := controllerutil.CreateOrUpdate(context.TODO(), c, addon, func() error {
+			if addon.Annotations == nil {
+				addon.Annotations = map[string]string{}
+			}
+			addon.Annotations[addonv1alpha1.HostingClusterNameAnnotationKey] = hostingClusterName
+			addon.Annotations[addonv1beta1.InstallNamespaceAnnotation] = installNamespace
+			return nil
+		})
+		return err
+	}).WithTimeout(2 * time.Minute).ShouldNot(HaveOccurred())
+
+	waitForAddonInstallNamespace(f)
+}
+
+func waitForAddonInstallNamespace(f framework.Framework) string {
+	addonInstallNamespace := ""
+	Eventually(func() error {
+		addon := &addonv1alpha1.ManagedClusterAddOn{}
+		if err := f.HubRuntimeClient().Get(context.TODO(), types.NamespacedName{
+			Namespace: f.TestClusterName(),
+			Name:      common.AddonName,
+		}, addon); err != nil {
+			return err
+		}
+		if addon.Status.Namespace == "" {
+			return fmt.Errorf("addon install namespace not yet set")
+		}
+		addonInstallNamespace = addon.Status.Namespace
+		return nil
+	}).WithTimeout(time.Minute).ShouldNot(HaveOccurred())
+	return addonInstallNamespace
+}
+
+func ensureExternalManagedKubeConfigDeployConfig(f framework.Framework) {
+	if f.ExternalManagedKubeConfigNamespace() == "" && f.ExternalManagedKubeConfigSecret() == "" {
+		return
+	}
+
+	c := f.HubRuntimeClient()
+	Eventually(func() error {
+		deployConfig := &addonv1alpha1.AddOnDeploymentConfig{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      hostedModeDeployConfigName,
+				Namespace: f.TestClusterName(),
+			},
+		}
+		_, err := controllerutil.CreateOrUpdate(context.TODO(), c, deployConfig, func() error {
+			deployConfig.Spec = addonv1alpha1.AddOnDeploymentConfigSpec{}
+			appendExternalManagedKubeConfigVariables(f, &deployConfig.Spec)
+			return nil
+		})
+		return err
+	}).WithTimeout(time.Minute).ShouldNot(HaveOccurred())
+
+	Eventually(func() error {
+		addon := &addonv1alpha1.ManagedClusterAddOn{}
+		if err := c.Get(context.TODO(), types.NamespacedName{
+			Namespace: f.TestClusterName(),
+			Name:      common.AddonName,
+		}, addon); err != nil {
+			return err
+		}
+
+		desired := addonv1alpha1.AddOnConfig{
+			ConfigGroupResource: addonv1alpha1.ConfigGroupResource{
+				Group:    "addon.open-cluster-management.io",
+				Resource: "addondeploymentconfigs",
+			},
+			ConfigReferent: addonv1alpha1.ConfigReferent{
+				Namespace: f.TestClusterName(),
+				Name:      hostedModeDeployConfigName,
+			},
+		}
+		for _, cfg := range addon.Spec.Configs {
+			if cfg == desired {
+				return nil
+			}
+		}
+		addon.Spec.Configs = append(addon.Spec.Configs, desired)
+		return c.Update(context.TODO(), addon)
+	}).WithTimeout(time.Minute).ShouldNot(HaveOccurred())
+}

@@ -1,0 +1,21 @@
+{{ if or (eq .AgentMetricsServiceEnabled "true") (eq .AgentServiceMonitorEnabled "true") }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: managed-serviceaccount-addon-agent
+  namespace: {{ .AddonInstallNamespace }}
+  labels:
+    addon-agent: managed-serviceaccount
+{{- if eq .InstallMode "Hosted" }}
+  annotations:
+    addon.open-cluster-management.io/hosted-manifest-location: hosting
+{{- end }}
+spec:
+  selector:
+    addon-agent: managed-serviceaccount
+  ports:
+    - name: metrics
+      port: 38080
+      targetPort: metrics
+      protocol: TCP
+{{ end }}

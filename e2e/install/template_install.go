@@ -59,7 +59,7 @@ var _ = Describe("Template Addon Installation Test", Label("install"), Label("te
 
 			By("Make sure addon is installed in default namespace")
 			Eventually(func() error {
-				_, err := f.HubNativeClient().AppsV1().Deployments(defaultNs).Get(
+				_, err := f.AgentNativeClient().AppsV1().Deployments(defaultNs).Get(
 					context.Background(), "managed-serviceaccount-addon-agent", metav1.GetOptions{})
 				return err
 			}).WithTimeout(time.Minute).ShouldNot(HaveOccurred())

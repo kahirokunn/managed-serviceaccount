@@ -66,7 +66,7 @@ envtest-setup:
 	@echo "KUBEBUILDER_ASSETS=$(KUBEBUILDER_ASSETS)"
 
 test: manifests generate fmt vet envtest-setup ## Run tests.
-	go test ./pkg/... -coverprofile cover.out
+	go test ./pkg/... ./cmd/... ./charts/... -coverprofile cover.out
 
 ##@ Build
 
@@ -148,6 +148,46 @@ test-integration:
 
 test-e2e: build-e2e
 	./bin/e2e --test-cluster $(E2E_TEST_CLUSTER_NAME) $(GENKGO_ARGS)
+
+# Hosted-mode e2e invocation. Pass separate kubeconfigs for the hub, the managed
+# (spoke) cluster, and the cluster where the addon agent Deployment runs (the
+# hosting cluster), and the external-managed-kubeconfig variables that the
+# provisioner reads on the hosting cluster.
+HUB_KUBECONFIG ?=
+SPOKE_KUBECONFIG ?=
+AGENT_KUBECONFIG ?=
+EXTERNAL_MANAGED_KUBECONFIG_NAMESPACE ?=
+EXTERNAL_MANAGED_KUBECONFIG_SECRET ?=
+# Hosted-mode ManagedClusterAddOn prerequisites. HOSTING_CLUSTER_NAME names the
+# registered hosting cluster (passed through to --hosting-cluster-name);
+# HOSTED_INSTALL_NAMESPACE is the per-managed-cluster install namespace on the
+# hosting cluster (--hosted-install-namespace) and must be unique per managed
+# cluster (see README "Hosted Mode" for the rationale). The e2e binary ensures
+# and annotates the ManagedClusterAddOn and validates the kubeconfig distinctness
+# that hosted mode requires; this target only forwards the flags.
+HOSTING_CLUSTER_NAME ?=
+HOSTED_INSTALL_NAMESPACE ?=
+
+test-e2e-hosted: build-e2e
+	@missing=; \
+	[ -n "$(HUB_KUBECONFIG)" ]           || missing="$$missing HUB_KUBECONFIG"; \
+	[ -n "$(SPOKE_KUBECONFIG)" ]         || missing="$$missing SPOKE_KUBECONFIG"; \
+	[ -n "$(AGENT_KUBECONFIG)" ]         || missing="$$missing AGENT_KUBECONFIG"; \
+	[ -n "$(HOSTING_CLUSTER_NAME)" ]     || missing="$$missing HOSTING_CLUSTER_NAME"; \
+	[ -n "$(HOSTED_INSTALL_NAMESPACE)" ] || missing="$$missing HOSTED_INSTALL_NAMESPACE"; \
+	if [ -n "$$missing" ]; then \
+		echo "test-e2e-hosted: required variables not set:$$missing (see README \"Hosted Mode\")" >&2; \
+		exit 1; \
+	fi
+	./bin/e2e --test-cluster $(E2E_TEST_CLUSTER_NAME) \
+		--hub-kubeconfig $(HUB_KUBECONFIG) \
+		--spoke-kubeconfig $(SPOKE_KUBECONFIG) \
+		--agent-kubeconfig $(AGENT_KUBECONFIG) \
+		--hosting-cluster-name $(HOSTING_CLUSTER_NAME) \
+		--hosted-install-namespace $(HOSTED_INSTALL_NAMESPACE) \
+		$(if $(EXTERNAL_MANAGED_KUBECONFIG_NAMESPACE),--external-managed-kubeconfig-namespace $(EXTERNAL_MANAGED_KUBECONFIG_NAMESPACE)) \
+		$(if $(EXTERNAL_MANAGED_KUBECONFIG_SECRET),--external-managed-kubeconfig-secret $(EXTERNAL_MANAGED_KUBECONFIG_SECRET)) \
+		$(GENKGO_ARGS)
 
 code-gen: client-gen lister-gen informer-gen ## Generate clientset, listers and informers
 	hack/code_gen.sh
