@@ -5,18 +5,17 @@ import (
 	"embed"
 	"encoding/base64"
 
-	certificatesv1 "k8s.io/api/certificates/v1"
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
-	"k8s.io/apimachinery/pkg/api/equality"
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/utils/ptr"
 
 	"open-cluster-management.io/addon-framework/pkg/addonfactory"
 	"open-cluster-management.io/addon-framework/pkg/agent"
+	addonutils "open-cluster-management.io/addon-framework/pkg/utils"
 	addonv1alpha1 "open-cluster-management.io/api/addon/v1alpha1"
+	addonv1beta1 "open-cluster-management.io/api/addon/v1beta1"
 	clusterv1 "open-cluster-management.io/api/cluster/v1"
 	"open-cluster-management.io/managed-serviceaccount/pkg/common"
 )
@@ -70,8 +69,9 @@ func setupPermission(nativeClient kubernetes.Interface) agent.PermissionConfigFu
 		} else {
 			subjects = []rbacv1.Subject{
 				{
-					Kind: rbacv1.UserKind,
-					Name: agent.DefaultUser(cluster.Name, common.AddonName, common.AgentName),
+					Kind:     rbacv1.UserKind,
+					APIGroup: rbacv1.GroupName,
+					Name:     agent.DefaultUser(cluster.Name, common.AddonName, common.AgentName),
 				},
 			}
 		}
@@ -123,44 +123,42 @@ func setupPermission(nativeClient kubernetes.Interface) agent.PermissionConfigFu
 				},
 			},
 			RoleRef: rbacv1.RoleRef{
-				Kind: "Role",
-				Name: "managed-serviceaccount-addon-agent",
+				APIGroup: rbacv1.GroupName,
+				Kind:     "Role",
+				Name:     "managed-serviceaccount-addon-agent",
 			},
 			Subjects: subjects,
 		}
 
-		if _, err := nativeClient.RbacV1().Roles(namespace).Create(
-			context.TODO(),
-			role,
-			metav1.CreateOptions{}); err != nil {
-			if !apierrors.IsAlreadyExists(err) {
-				return err
-			}
+		if _, _, err := addonutils.ApplyRole(context.TODO(), nativeClient.RbacV1(), role); err != nil {
+			return err
 		}
-		if _, err := nativeClient.RbacV1().RoleBindings(namespace).Create(
-			context.TODO(),
-			roleBinding,
-			metav1.CreateOptions{}); err != nil {
-			if !apierrors.IsAlreadyExists(err) {
-				return err
-			}
+		if _, _, err := addonutils.ApplyRoleBinding(context.TODO(), nativeClient.RbacV1(), roleBinding); err != nil {
+			return err
 		}
 		return nil
 	}
 }
 
-// rbacSubjectsFromKubeClientRegistration mirrors addon-framework registration subject handling for
-// kubernetes.io/kube-apiserver-client: use the user and groups published in ManagedClusterAddOn status
-// (required for klusterlet token registration). The system:authenticated group is omitted so bindings stay narrow.
+// rbacSubjectsFromKubeClientRegistration mirrors addon-framework kubeClient registration subject
+// handling while omitting system:authenticated so this addon's hub RBAC stays narrow.
 func rbacSubjectsFromKubeClientRegistration(addon *addonv1alpha1.ManagedClusterAddOn) []rbacv1.Subject {
-	var subject *addonv1alpha1.Subject
+	var subject *addonv1beta1.KubeClientSubject
 	for i := range addon.Status.Registrations {
-		if addon.Status.Registrations[i].SignerName == certificatesv1.KubeAPIServerClientSignerName {
-			subject = &addon.Status.Registrations[i].Subject
+		registration := addonv1beta1.RegistrationConfig{}
+		if err := addonv1beta1.Convert_v1alpha1_RegistrationConfig_To_v1beta1_RegistrationConfig(
+			&addon.Status.Registrations[i],
+			&registration,
+			nil,
+		); err != nil {
+			return nil
+		}
+		if registration.Type == addonv1beta1.KubeClient && registration.KubeClient != nil {
+			subject = &registration.KubeClient.Subject
 			break
 		}
 	}
-	if subject == nil || equality.Semantic.DeepEqual(*subject, addonv1alpha1.Subject{}) {
+	if subject == nil || (subject.User == "" && len(subject.Groups) == 0) {
 		return nil
 	}
 
