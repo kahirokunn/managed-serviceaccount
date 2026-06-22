@@ -29,8 +29,11 @@ The addon follows the standard OCM [addon architecture](https://open-cluster-man
 
 The managed service account addon supports 2 installation ways:
 
-- **default (manager - agent)**: Full deployment with both addon manager and addon agent components
-- **addontemplate (only agent)**: Lightweight deployment with only the addon agent component
+- **default (manager - agent)**: Full deployment with both addon manager and addon agent components.
+- **addontemplate (only agent)**: Classic addon-manager driven install with only the addon agent component.
+
+`AddOnTemplate` mode is supported only for classic installs. Hosted mode requires
+the default `Deployment` mode.
 
 ## Installation
 
