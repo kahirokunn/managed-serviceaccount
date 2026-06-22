@@ -207,6 +207,7 @@ func (o *HubManagerOptions) Run() error {
 	agentFactory := addonfactory.NewAgentAddonFactory(common.AddonName, manager.FS, "manifests/charts/managed-serviceaccount-agent").
 		WithScheme(manager.NewAgentScheme()).
 		WithConfigGVRs(utils.AddOnDeploymentConfigGVR).
+		WithAgentHostedModeEnabledOption().
 		WithAgentInstallNamespace(utils.AgentInstallNamespaceFromDeploymentConfigFunc(deploymentConfigGetter)).
 		WithGetValuesFuncs(
 			manager.GetDefaultValues(o.AddonAgentImageName, imagePullSecret),
